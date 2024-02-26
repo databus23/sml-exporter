@@ -8,12 +8,11 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"os/exec"
-	"regexp"
 	"strconv"
-	"strings"
+	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	sml "github.com/mfmayer/gosml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -46,19 +45,18 @@ func main() {
 	//we don')t want to export the go garble
 	registry := prometheus.NewRegistry()
 	if err := registry.Register(verbrauchTotal); err != nil {
-		log.Fatal("Error registering verbrauch_wh_total metric: %s", err)
+		log.Fatalf("Error registering verbrauch_wh_total metric: %s", err)
 	}
 	if err := registry.Register(einspeisungTotal); err != nil {
-		log.Fatal("Error registering einspeisung_wh_total metric: %s", err)
+		log.Fatalf("Error registering einspeisung_wh_total metric: %s", err)
 	}
 	if err := registry.Register(wirkleistung); err != nil {
-		log.Fatal("Error registering gesamt_w metric: %s", err)
+		log.Fatalf("Error registering gesamt_w metric: %s", err)
 	}
 
-	var serialDev, smlServerBinary, listen string
+	var serialDev, listen string
 	var mqttServer, mqttUsername, mqttPassword, mqttTopicPrefix string
 	flag.StringVar(&serialDev, "serial", "", "Serial device to read from")
-	flag.StringVar(&smlServerBinary, "sml-server", "sml_server", "sml server binary to run")
 	flag.StringVar(&listen, "metrics-address", ":9761", "The address to listen on for HTTP requests.")
 	flag.StringVar(&mqttServer, "mqtt-server", "", "MQTT server to publish values to as they are received")
 	flag.StringVar(&mqttUsername, "mqtt-username", "", "MQTT username")
@@ -70,7 +68,7 @@ func main() {
 		log.Fatalf("No or invalid serial device given: %s", serialDev)
 	}
 
-	smartmeter := NewSmartmeterReader(smlServerBinary, serialDev)
+	smartmeter := NewSmartmeterReader(serialDev)
 
 	if mqttServer != "" {
 		opts := MQTT.NewClientOptions()
@@ -79,7 +77,7 @@ func main() {
 		opts.SetPassword(mqttPassword)
 		client := MQTT.NewClient(opts)
 		if token := client.Connect(); token.Wait() && token.Error() != nil {
-			log.Println("Failed to connect to broker: %s", token.Error())
+			log.Printf("Failed to connect to broker: %s", token.Error())
 		}
 
 		smartmeter.RegisterHandler(func(_ string, t SmartmeterDataType, v float64) {
@@ -102,19 +100,17 @@ func main() {
 		default:
 			return
 		}
-
 	})
 	go func() {
 		err := smartmeter.Run()
 		if err != nil {
-			log.Fatalf("smartreader failed: %s", err)
+			log.Fatalf("smartmeter reader failed: %s", err)
 		}
 	}()
 
 	log.Printf("Listening on %s", listen)
 	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	log.Fatal(http.ListenAndServe(listen, nil))
-
 }
 
 type SmartmeterDataType string
@@ -123,24 +119,27 @@ const (
 	SmartmeterPositiveWirkenergieTariflos SmartmeterDataType = "1-0:1.8.0*255"
 	SmartmeterNegativeWirkenergieTariflos SmartmeterDataType = "1-0:2.8.0*255"
 	SmartmeterMomentaneWirkleistung       SmartmeterDataType = "1-0:16.7.0*255"
+	SmartmeterMomentaneWirkleistungL1     SmartmeterDataType = "1-0:36.7.0*255"
+	SmartmeterMomentaneWirkleistungL2     SmartmeterDataType = "1-0:56.7.0*255"
+	SmartmeterMomentaneWirkleistungL3     SmartmeterDataType = "1-0:76.7.0*255"
+	SmartmeterMomentaneSpannungL1         SmartmeterDataType = "1-0:32.7.0*255"
+	SmartmeterMomentaneSpannungL2         SmartmeterDataType = "1-0:52.7.0*255"
+	SmartmeterMomentaneSpannungL3         SmartmeterDataType = "1-0:72.7.0*255"
 	SmartmeterServerID                    SmartmeterDataType = "1-0:96.1.0*255"
 )
 
 type SmartmeterValueHandler func(string, SmartmeterDataType, float64)
 
 type SmartmeterReader struct {
-	binary, serial string
-	handlers       []SmartmeterValueHandler
-	serverID       string
+	serial   string
+	handlers []SmartmeterValueHandler
+	serverID string
 }
 
-func NewSmartmeterReader(binary string, serial string) *SmartmeterReader {
-
+func NewSmartmeterReader(serial string) *SmartmeterReader {
 	return &SmartmeterReader{
-		binary: binary,
 		serial: serial,
 	}
-
 }
 
 func (s *SmartmeterReader) RegisterHandler(h SmartmeterValueHandler) {
@@ -148,63 +147,40 @@ func (s *SmartmeterReader) RegisterHandler(h SmartmeterValueHandler) {
 }
 
 func (s *SmartmeterReader) Run() error {
+	if _, err := os.Stat(s.serial); os.IsNotExist(err) {
+		return fmt.Errorf("file '%s' does not exist", s.serial)
+	}
 	for {
-		cmd := exec.Command(s.binary, s.serial)
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return fmt.Errorf("Failed to create pipe for sub process: %w", err)
-		}
-		cmd.Stderr = os.Stderr
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("Failed to start: %v: %w", strings.Join(cmd.Args, " "), err)
-		}
-		log.Printf("Started %v", strings.Join(cmd.Args, " "))
-
-		go func() {
-			scanner := bufio.NewScanner(stdout)
-			for scanner.Scan() {
-				s.processLine(scanner.Text())
+		f, err := os.OpenFile(s.serial, os.O_RDONLY|256, 0666)
+		if err == nil {
+			r := bufio.NewReader(f)
+			log.Printf("Reading SML data from %s", s.serial)
+			if err := sml.Read(r, sml.WithObisCallback(sml.OctetString{}, s.obisCallback)); err != nil {
+				log.Printf("Error reading SML data: %s", err)
 			}
-		}()
-		log.Printf("%s exited: %s", s.binary, cmd.Wait())
+		} else {
+			log.Printf("Error opening file: %s", err)
+		}
+		time.Sleep(1 * time.Second)
 	}
 }
 
-var smlServerRE = regexp.MustCompile(`^([^:]+:[^*]+\*\d+)#([^#]+)#(.*)`)
-
-func (s *SmartmeterReader) processLine(line string) {
-	// 1-0:96.50.1*1#EMH#
-	// 1-0:96.1.0*255# XX XX XX XX XX #
-	// 1-0:1.8.0*255#768.2#Wh
-	// 1-0:16.7.0*255#-178#W
-
-	matches := smlServerRE.FindStringSubmatch(line)
-	if matches == nil {
-		log.Println("Ignoring invalid line: %s", line)
-	}
-	obis := matches[1]
-	value := matches[2]
-	//unit := matches[3]
-
-	switch SmartmeterDataType(obis) {
+func (s *SmartmeterReader) obisCallback(msg *sml.ListEntry) {
+	log.Printf("Got message: %#v %#v", msg.ObjectName(), msg.ValueString())
+	switch SmartmeterDataType(msg.ObjectName()) {
 	case SmartmeterServerID:
-		s.serverID = value
+		s.serverID = msg.ValueString()
 	case SmartmeterPositiveWirkenergieTariflos:
-		s.callHandlers(SmartmeterPositiveWirkenergieTariflos, value)
+		s.callHandlers(SmartmeterPositiveWirkenergieTariflos, msg.Float())
 	case SmartmeterNegativeWirkenergieTariflos:
-		s.callHandlers(SmartmeterNegativeWirkenergieTariflos, value)
+		s.callHandlers(SmartmeterNegativeWirkenergieTariflos, msg.Float())
 	case SmartmeterMomentaneWirkleistung:
-		s.callHandlers(SmartmeterMomentaneWirkleistung, value)
+		s.callHandlers(SmartmeterMomentaneWirkleistung, msg.Float())
 	}
 }
 
-func (s *SmartmeterReader) callHandlers(t SmartmeterDataType, value string) {
-	v, err := strconv.ParseFloat(value, 64)
-	if err != nil {
-		log.Printf("Failed to parse value %v for %s: %s", value, t, err)
-		return
-	}
+func (s *SmartmeterReader) callHandlers(t SmartmeterDataType, value float64) {
 	for _, handler := range s.handlers {
-		go handler(s.serverID, t, v)
+		go handler(s.serverID, t, value)
 	}
 }
