@@ -19,35 +19,41 @@ import (
 )
 
 var (
-	verbrauchTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+	verbrauchTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "smartmeter",
 		Subsystem: "wirkarbeit",
 		Name:      "verbrauch_wh_total",
 		Help:      "Summe Wirkarbeit Verbrauch über alle Phasen",
-	})
+	}, []string{"server_id"})
 
-	einspeisungTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+	einspeisungTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "smartmeter",
 		Subsystem: "wirkarbeit",
 		Name:      "einspeisung_wh_total",
 		Help:      "Summe Wirkarbeit Einspeisung über alle Phasen",
-	})
+	}, []string{"server_id"})
 
-	wirkleistung = prometheus.NewGauge(prometheus.GaugeOpts{
+	wirkleistung = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "smartmeter",
 		Subsystem: "wirkleistung",
 		Name:      "gesamt_w",
 		Help:      "gelieferte Leistung ueber alle Phasen",
-	})
+	}, []string{"server_id"})
 )
 
 func main() {
 
 	//we don')t want to export the go garble
 	registry := prometheus.NewRegistry()
-	registry.Register(verbrauchTotal)
-	registry.Register(einspeisungTotal)
-	registry.Register(wirkleistung)
+	if err := registry.Register(verbrauchTotal); err != nil {
+		log.Fatal("Error registering verbrauch_wh_total metric: %s", err)
+	}
+	if err := registry.Register(einspeisungTotal); err != nil {
+		log.Fatal("Error registering einspeisung_wh_total metric: %s", err)
+	}
+	if err := registry.Register(wirkleistung); err != nil {
+		log.Fatal("Error registering gesamt_w metric: %s", err)
+	}
 
 	var serialDev, smlServerBinary, listen string
 	var mqttServer, mqttUsername, mqttPassword, mqttTopicPrefix string
@@ -76,7 +82,7 @@ func main() {
 			log.Println("Failed to connect to broker: %s", token.Error())
 		}
 
-		smartmeter.RegisterHandler(func(t SmartmeterDataType, v float64) {
+		smartmeter.RegisterHandler(func(_ string, t SmartmeterDataType, v float64) {
 			switch t {
 			case SmartmeterMomentaneWirkleistung:
 				client.Publish(mqttTopicPrefix+"/momentane-wirkleistung", 0, false, strconv.Itoa(int(math.Round(v))))
@@ -85,14 +91,14 @@ func main() {
 
 	}
 
-	smartmeter.RegisterHandler(func(t SmartmeterDataType, value float64) {
+	smartmeter.RegisterHandler(func(serverID string, t SmartmeterDataType, value float64) {
 		switch t {
 		case SmartmeterMomentaneWirkleistung:
-			wirkleistung.Set(value)
+			wirkleistung.WithLabelValues(serverID).Set(value)
 		case SmartmeterPositiveWirkenergieTariflos:
-			verbrauchTotal.Set(value)
+			verbrauchTotal.WithLabelValues(serverID).Set(value)
 		case SmartmeterNegativeWirkenergieTariflos:
-			einspeisungTotal.Set(value)
+			einspeisungTotal.WithLabelValues(serverID).Set(value)
 		default:
 			return
 		}
@@ -117,13 +123,15 @@ const (
 	SmartmeterPositiveWirkenergieTariflos SmartmeterDataType = "1-0:1.8.0*255"
 	SmartmeterNegativeWirkenergieTariflos SmartmeterDataType = "1-0:2.8.0*255"
 	SmartmeterMomentaneWirkleistung       SmartmeterDataType = "1-0:16.7.0*255"
+	SmartmeterServerID                    SmartmeterDataType = "1-0:96.1.0*255"
 )
 
-type SmartmeterValueHandler func(SmartmeterDataType, float64)
+type SmartmeterValueHandler func(string, SmartmeterDataType, float64)
 
 type SmartmeterReader struct {
 	binary, serial string
 	handlers       []SmartmeterValueHandler
+	serverID       string
 }
 
 func NewSmartmeterReader(binary string, serial string) *SmartmeterReader {
@@ -179,6 +187,8 @@ func (s *SmartmeterReader) processLine(line string) {
 	//unit := matches[3]
 
 	switch SmartmeterDataType(obis) {
+	case SmartmeterServerID:
+		s.serverID = value
 	case SmartmeterPositiveWirkenergieTariflos:
 		s.callHandlers(SmartmeterPositiveWirkenergieTariflos, value)
 	case SmartmeterNegativeWirkenergieTariflos:
@@ -195,6 +205,6 @@ func (s *SmartmeterReader) callHandlers(t SmartmeterDataType, value string) {
 		return
 	}
 	for _, handler := range s.handlers {
-		go handler(t, v)
+		go handler(s.serverID, t, v)
 	}
 }
