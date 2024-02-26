@@ -5,56 +5,41 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	sml "github.com/mfmayer/gosml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	yaml "gopkg.in/yaml.v2"
 )
 
-var (
-	verbrauchTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "smartmeter",
-		Subsystem: "wirkarbeit",
-		Name:      "verbrauch_wh_total",
-		Help:      "Summe Wirkarbeit Verbrauch über alle Phasen",
-	}, []string{"server_id"})
+type ObisConfig struct {
+	Type   string       `yaml:"type"`
+	Var    string       `yaml:"var"`
+	MQTT   MQTTConfig   `yaml:"mqtt"`
+	Metric MetricConfig `yaml:"metric"`
+}
+type MQTTConfig struct {
+	Topic string `yaml:"topic"`
+}
+type MetricConfig struct {
+	Name string `yaml:"name"`
+	Help string `yaml:"help"`
+	Type string `yaml:"type"`
+}
 
-	einspeisungTotal = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "smartmeter",
-		Subsystem: "wirkarbeit",
-		Name:      "einspeisung_wh_total",
-		Help:      "Summe Wirkarbeit Einspeisung über alle Phasen",
-	}, []string{"server_id"})
+type SmartmeterValueHandler func(string, ObisConfig, float64)
 
-	wirkleistung = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "smartmeter",
-		Subsystem: "wirkleistung",
-		Name:      "gesamt_w",
-		Help:      "gelieferte Leistung ueber alle Phasen",
-	}, []string{"server_id"})
-)
+var debug bool
 
 func main() {
 
-	//we don')t want to export the go garble
-	registry := prometheus.NewRegistry()
-	if err := registry.Register(verbrauchTotal); err != nil {
-		log.Fatalf("Error registering verbrauch_wh_total metric: %s", err)
-	}
-	if err := registry.Register(einspeisungTotal); err != nil {
-		log.Fatalf("Error registering einspeisung_wh_total metric: %s", err)
-	}
-	if err := registry.Register(wirkleistung); err != nil {
-		log.Fatalf("Error registering gesamt_w metric: %s", err)
-	}
-
-	var serialDev, listen string
+	var serialDev, listen, configFile string
 	var mqttServer, mqttUsername, mqttPassword, mqttTopicPrefix string
 	flag.StringVar(&serialDev, "serial", "", "Serial device to read from")
 	flag.StringVar(&listen, "metrics-address", ":9761", "The address to listen on for HTTP requests.")
@@ -62,13 +47,25 @@ func main() {
 	flag.StringVar(&mqttUsername, "mqtt-username", "", "MQTT username")
 	flag.StringVar(&mqttPassword, "mqtt-password", "", "MQTT password")
 	flag.StringVar(&mqttTopicPrefix, "mqtt-topic-prefix", "smartmeter", "MQTT topic prefix for publishing values")
+	flag.StringVar(&configFile, "config", "", "configfile with obis code mappings")
+	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
 	flag.Parse()
 
 	if _, err := os.Stat(serialDev); err != nil {
 		log.Fatalf("No or invalid serial device given: %s", serialDev)
 	}
 
-	smartmeter := NewSmartmeterReader(serialDev)
+	configData, err := os.ReadFile(configFile)
+	if err != nil {
+		log.Fatalf("Error reading config file %s: %s", configFile, err)
+	}
+	var obisMappings map[string]ObisConfig
+	if err := yaml.Unmarshal(configData, &obisMappings); err != nil {
+		log.Fatalf("Error parsing config file %s: %s", configFile, err)
+	}
+
+	log.Printf("%#v", obisMappings)
+	smartmeter := NewSmartmeterReader(serialDev, obisMappings)
 
 	if mqttServer != "" {
 		opts := MQTT.NewClientOptions()
@@ -80,25 +77,32 @@ func main() {
 			log.Printf("Failed to connect to broker: %s", token.Error())
 		}
 
-		smartmeter.RegisterHandler(func(_ string, t SmartmeterDataType, v float64) {
-			switch t {
-			case SmartmeterMomentaneWirkleistung:
-				client.Publish(mqttTopicPrefix+"/momentane-wirkleistung", 0, false, strconv.Itoa(int(math.Round(v))))
+		smartmeter.RegisterHandler(func(_ string, config ObisConfig, v float64) {
+			if config.MQTT.Topic != "" {
+				client.Publish(config.MQTT.Topic, 0, false, strconv.FormatFloat(v, 'f', -1, 64))
 			}
 		})
 
 	}
+	//we don't want to export the go garble
+	registry := prometheus.NewRegistry()
+	metricsMap := make(map[string]prometheus.GaugeVec)
+	for obisCode, config := range obisMappings {
+		if config.Metric.Name == "" {
+			continue
+		}
+		metricsMap[obisCode] = *prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: config.Metric.Name,
+			Help: config.Metric.Help,
+		}, []string{"server_id"})
 
-	smartmeter.RegisterHandler(func(serverID string, t SmartmeterDataType, value float64) {
-		switch t {
-		case SmartmeterMomentaneWirkleistung:
-			wirkleistung.WithLabelValues(serverID).Set(value)
-		case SmartmeterPositiveWirkenergieTariflos:
-			verbrauchTotal.WithLabelValues(serverID).Set(value)
-		case SmartmeterNegativeWirkenergieTariflos:
-			einspeisungTotal.WithLabelValues(serverID).Set(value)
-		default:
-			return
+		registry.MustRegister(metricsMap[obisCode])
+	}
+
+	smartmeter.RegisterHandler(func(code string, config ObisConfig, value float64) {
+		metric, ok := metricsMap[code]
+		if ok {
+			metric.With(prometheus.Labels{"server_id": smartmeter.Var("server_id")}).Set(value)
 		}
 	})
 	go func() {
@@ -113,32 +117,18 @@ func main() {
 	log.Fatal(http.ListenAndServe(listen, nil))
 }
 
-type SmartmeterDataType string
-
-const (
-	SmartmeterPositiveWirkenergieTariflos SmartmeterDataType = "1-0:1.8.0*255"
-	SmartmeterNegativeWirkenergieTariflos SmartmeterDataType = "1-0:2.8.0*255"
-	SmartmeterMomentaneWirkleistung       SmartmeterDataType = "1-0:16.7.0*255"
-	SmartmeterMomentaneWirkleistungL1     SmartmeterDataType = "1-0:36.7.0*255"
-	SmartmeterMomentaneWirkleistungL2     SmartmeterDataType = "1-0:56.7.0*255"
-	SmartmeterMomentaneWirkleistungL3     SmartmeterDataType = "1-0:76.7.0*255"
-	SmartmeterMomentaneSpannungL1         SmartmeterDataType = "1-0:32.7.0*255"
-	SmartmeterMomentaneSpannungL2         SmartmeterDataType = "1-0:52.7.0*255"
-	SmartmeterMomentaneSpannungL3         SmartmeterDataType = "1-0:72.7.0*255"
-	SmartmeterServerID                    SmartmeterDataType = "1-0:96.1.0*255"
-)
-
-type SmartmeterValueHandler func(string, SmartmeterDataType, float64)
-
 type SmartmeterReader struct {
-	serial   string
-	handlers []SmartmeterValueHandler
-	serverID string
+	serial    string
+	mappings  map[string]ObisConfig
+	handlers  []SmartmeterValueHandler
+	variables map[string]string
 }
 
-func NewSmartmeterReader(serial string) *SmartmeterReader {
+func NewSmartmeterReader(serial string, config map[string]ObisConfig) *SmartmeterReader {
 	return &SmartmeterReader{
-		serial: serial,
+		serial:    serial,
+		mappings:  config,
+		variables: make(map[string]string),
 	}
 }
 
@@ -164,23 +154,30 @@ func (s *SmartmeterReader) Run() error {
 		time.Sleep(1 * time.Second)
 	}
 }
+func (s *SmartmeterReader) Var(key string) string {
+	return s.variables[key]
+}
 
 func (s *SmartmeterReader) obisCallback(msg *sml.ListEntry) {
-	log.Printf("Got message: %#v %#v", msg.ObjectName(), msg.ValueString())
-	switch SmartmeterDataType(msg.ObjectName()) {
-	case SmartmeterServerID:
-		s.serverID = msg.ValueString()
-	case SmartmeterPositiveWirkenergieTariflos:
-		s.callHandlers(SmartmeterPositiveWirkenergieTariflos, msg.Float())
-	case SmartmeterNegativeWirkenergieTariflos:
-		s.callHandlers(SmartmeterNegativeWirkenergieTariflos, msg.Float())
-	case SmartmeterMomentaneWirkleistung:
-		s.callHandlers(SmartmeterMomentaneWirkleistung, msg.Float())
+	log.Printf("Got message:  %#v %s", msg.ObjectName(), strings.TrimSpace(msg.ValueString()))
+	//log.Printf("Got message2:  %#v %#v", msg.ObjectName(), msg)
+
+	code := msg.ObjectName()
+	obisConfig, ok := s.mappings[code]
+	if !ok {
+		return
+	}
+	if obisConfig.Var != "" && obisConfig.Type == "string" {
+		s.variables[obisConfig.Var] = msg.ValueString()
+	}
+
+	if obisConfig.Type == "float" || obisConfig.Type == "" {
+		s.callHandlers(code, obisConfig, msg.Float())
 	}
 }
 
-func (s *SmartmeterReader) callHandlers(t SmartmeterDataType, value float64) {
+func (s *SmartmeterReader) callHandlers(code string, config ObisConfig, value float64) {
 	for _, handler := range s.handlers {
-		go handler(s.serverID, t, value)
+		go handler(code, config, value)
 	}
 }

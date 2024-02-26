@@ -1,0 +1,48 @@
+1-0:96.1.0*255:
+  type: string
+  var: server_id
+1-0:1.8.0*255:
+  mqtt: 
+    topic: "smartmeter/wirkarbeit-verbrauch"
+  metric:
+    name: "smartmeter_wirkarbeit_verbrauch_wh_total"
+1-0:2.8.0*255:
+  mqtt: 
+    topic: "smartmeter/wirkarbeit-einspeisung"
+  metric:
+    name: "smartmeter_wirkarbeit_einspeisung_wh_total"
+1-0:16.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-wirkleistung"
+  metric:
+    name: "smartmeter_leistung_gesamt_w"
+1-0:36.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-wirkleistung-l1"
+  metric:
+    name: "smartmeter_leistung_l1_w"
+1-0:56.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-wirkleistung-l2"
+  metric:
+    name: "smartmeter_leistung_l2_w"
+1-0:76.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-wirkleistung-l3"
+  metric:
+    name: "smartmeter_leistung_l3_w"
+1-0:32.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-spannung-l1"
+  metric:
+    name: "smartmeter_spannung_l1_volt"
+1-0:52.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-spannung-l2"
+  metric:
+    name: "smartmeter_spanung_l2_volt"
+1-0:72.7.0*255:
+  mqtt: 
+    topic: "smartmeter/momentane-spannung-l3"
+  metric:
+    name: "smartmeter_spanung_l3_volt"
