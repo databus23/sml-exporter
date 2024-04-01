@@ -12,6 +12,7 @@ import (
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"github.com/jacobsa/go-serial/serial"
 	sml "github.com/mfmayer/gosml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -64,7 +65,6 @@ func main() {
 		log.Fatalf("Error parsing config file %s: %s", configFile, err)
 	}
 
-	log.Printf("%#v", obisMappings)
 	smartmeter := NewSmartmeterReader(serialDev, obisMappings)
 
 	if mqttServer != "" {
@@ -141,13 +141,20 @@ func (s *SmartmeterReader) Run() error {
 		return fmt.Errorf("file '%s' does not exist", s.serial)
 	}
 	for {
-		f, err := os.OpenFile(s.serial, os.O_RDONLY|256, 0666)
+		port, err := serial.Open(serial.OpenOptions{
+			PortName:        s.serial,
+			BaudRate:        9600,
+			DataBits:        8,
+			StopBits:        1,
+			MinimumReadSize: 1,
+		})
 		if err == nil {
-			r := bufio.NewReader(f)
+			r := bufio.NewReader(port)
 			log.Printf("Reading SML data from %s", s.serial)
 			if err := sml.Read(r, sml.WithObisCallback(sml.OctetString{}, s.obisCallback)); err != nil {
 				log.Printf("Error reading SML data: %s", err)
 			}
+			port.Close()
 		} else {
 			log.Printf("Error opening file: %s", err)
 		}
@@ -159,8 +166,9 @@ func (s *SmartmeterReader) Var(key string) string {
 }
 
 func (s *SmartmeterReader) obisCallback(msg *sml.ListEntry) {
-	log.Printf("Got message:  %#v %s", msg.ObjectName(), strings.TrimSpace(msg.ValueString()))
-	//log.Printf("Got message2:  %#v %#v", msg.ObjectName(), msg)
+	if debug {
+		log.Printf("Got message:  %#v %s", msg.ObjectName(), strings.TrimSpace(msg.ValueString()))
+	}
 
 	code := msg.ObjectName()
 	obisConfig, ok := s.mappings[code]

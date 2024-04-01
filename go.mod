@@ -4,6 +4,7 @@ go 1.17
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.4.2
+	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4
 	github.com/mfmayer/gosml v0.0.1
 	github.com/prometheus/client_golang v1.12.1
 	gopkg.in/yaml.v2 v2.4.0
