@@ -74,7 +74,7 @@ func main() {
 		opts.SetPassword(mqttPassword)
 		client := MQTT.NewClient(opts)
 		if token := client.Connect(); token.Wait() && token.Error() != nil {
-			log.Printf("Failed to connect to broker: %s", token.Error())
+			log.Fatalf("Failed to connect to broker: %s", token.Error())
 		}
 
 		smartmeter.RegisterHandler(func(_ string, config ObisConfig, v float64) {
