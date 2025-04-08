@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
@@ -38,6 +39,12 @@ type SmartmeterValueHandler func(string, ObisConfig, float64)
 
 var debug bool
 
+var (
+	lastUpdateTime time.Time
+	healthMutex    sync.Mutex
+	healthTimeout  time.Duration
+)
+
 func main() {
 
 	var serialDev, listen, configFile string
@@ -50,6 +57,7 @@ func main() {
 	flag.StringVar(&mqttTopicPrefix, "mqtt-topic-prefix", "smartmeter", "MQTT topic prefix for publishing values")
 	flag.StringVar(&configFile, "config", "", "configfile with obis code mappings")
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
+	flag.DurationVar(&healthTimeout, "health-timeout", 10*time.Second, "Timeout duration for health check (e.g., 10s, 1m)")
 	flag.Parse()
 
 	if _, err := os.Stat(serialDev); err != nil {
@@ -105,6 +113,29 @@ func main() {
 			metric.With(prometheus.Labels{"server_id": smartmeter.Var("server_id")}).Set(value)
 		}
 	})
+
+	lastUpdateTime = time.Now()
+
+	// Register a health check handler
+	smartmeter.RegisterHandler(func(_ string, _ ObisConfig, _ float64) {
+		healthMutex.Lock()
+		lastUpdateTime = time.Now()
+		healthMutex.Unlock()
+	})
+
+	// Start the health check endpoint
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		healthMutex.Lock()
+		defer healthMutex.Unlock()
+
+		if time.Since(lastUpdateTime) > healthTimeout {
+			http.Error(w, "No updates received from smartmeter", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	go func() {
 		err := smartmeter.Run()
 		if err != nil {
