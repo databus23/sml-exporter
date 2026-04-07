@@ -1,4 +1,4 @@
-IMAGE:=databus23/sml-exporter:0.7.0
+IMAGE:=databus23/sml-exporter:latest
 
 build:
 	docker build --platform=linux/arm64 -t $(IMAGE) .

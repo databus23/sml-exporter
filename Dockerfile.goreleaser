@@ -1,0 +1,3 @@
+FROM alpine
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/sml-exporter /usr/local/bin/
