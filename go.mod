@@ -1,11 +1,11 @@
 module github.com/databus23/sml-exporter
 
-go 1.25.0
+go 1.26.1
 
 require (
+	github.com/databus23/go-sml v0.0.0-20260410221612-b8bad781fe3a
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/jacobsa/go-serial v0.0.0-20180131005756-15cf729a72d4
-	github.com/mfmayer/gosml v0.0.1
 	github.com/prometheus/client_golang v1.23.2
 	gopkg.in/yaml.v2 v2.4.0
 )
@@ -25,5 +25,3 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/mfmayer/gosml => github.com/databus23/gosml v0.0.0-20240225223655-5876bb6ff120

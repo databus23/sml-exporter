@@ -2,19 +2,20 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"github.com/jacobsa/go-serial/serial"
-	sml "github.com/mfmayer/gosml"
+	sml "github.com/databus23/go-sml"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	yaml "gopkg.in/yaml.v2"
@@ -182,7 +183,12 @@ func (s *SmartmeterReader) Run() error {
 		if err == nil {
 			r := bufio.NewReader(port)
 			log.Printf("Reading SML data from %s", s.serial)
-			if err := sml.Read(r, sml.WithObisCallback(sml.OctetString{}, s.obisCallback)); err != nil {
+			if err := sml.Listen(context.Background(), r, func(f *sml.File) error {
+				for _, entry := range f.Readings() {
+					s.obisCallback(entry)
+				}
+				return nil
+			}); err != nil {
 				log.Printf("Error reading SML data: %s", err)
 			}
 			port.Close()
@@ -196,22 +202,26 @@ func (s *SmartmeterReader) Var(key string) string {
 	return s.variables[key]
 }
 
-func (s *SmartmeterReader) obisCallback(msg *sml.ListEntry) {
+func (s *SmartmeterReader) obisCallback(entry sml.ListEntry) {
+	code := entry.OBISString()
 	if debug {
-		log.Printf("Got message:  %#v %s", msg.ObjectName(), strings.TrimSpace(msg.ValueString()))
+		log.Printf("Got message: %s %v", code, entry.Value)
 	}
 
-	code := msg.ObjectName()
 	obisConfig, ok := s.mappings[code]
 	if !ok {
 		return
 	}
 	if obisConfig.Var != "" && obisConfig.Type == "string" {
-		s.variables[obisConfig.Var] = msg.ValueString()
+		if v, ok := entry.Value.(sml.OctetString); ok {
+			s.variables[obisConfig.Var] = hex.EncodeToString(v)
+		}
 	}
 
 	if obisConfig.Type == "float" || obisConfig.Type == "" {
-		s.callHandlers(code, obisConfig, msg.Float())
+		if v, ok := entry.ScaledValue(); ok {
+			s.callHandlers(code, obisConfig, v)
+		}
 	}
 }
 
