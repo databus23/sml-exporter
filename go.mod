@@ -1,6 +1,6 @@
 module github.com/databus23/sml-exporter
 
-go 1.26.1
+go 1.26.2
 
 require (
 	github.com/databus23/go-sml v0.0.0-20260410221612-b8bad781fe3a
