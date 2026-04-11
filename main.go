@@ -36,7 +36,7 @@ type MetricConfig struct {
 	Type string `yaml:"type"`
 }
 
-type SmartmeterValueHandler func(string, ObisConfig, float64)
+type SmartmeterValueHandler func(code string, config ObisConfig, value float64, unit string)
 
 var debug bool
 
@@ -86,7 +86,7 @@ func main() {
 			log.Fatalf("Failed to connect to broker: %s", token.Error())
 		}
 
-		smartmeter.RegisterHandler(func(_ string, config ObisConfig, v float64) {
+		smartmeter.RegisterHandler(func(_ string, config ObisConfig, v float64, _ string) {
 			if config.MQTT.Topic != "" {
 				client.Publish(config.MQTT.Topic, 0, false, strconv.FormatFloat(v, 'f', -1, 64))
 			}
@@ -103,22 +103,22 @@ func main() {
 		metricsMap[obisCode] = *prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: config.Metric.Name,
 			Help: config.Metric.Help,
-		}, []string{"server_id"})
+		}, []string{"server_id", "unit"})
 
 		registry.MustRegister(metricsMap[obisCode])
 	}
 
-	smartmeter.RegisterHandler(func(code string, config ObisConfig, value float64) {
+	smartmeter.RegisterHandler(func(code string, config ObisConfig, value float64, unit string) {
 		metric, ok := metricsMap[code]
 		if ok {
-			metric.With(prometheus.Labels{"server_id": smartmeter.Var("server_id")}).Set(value)
+			metric.With(prometheus.Labels{"server_id": smartmeter.Var("server_id"), "unit": unit}).Set(value)
 		}
 	})
 
 	lastUpdateTime = time.Now()
 
 	// Register a health check handler
-	smartmeter.RegisterHandler(func(_ string, _ ObisConfig, _ float64) {
+	smartmeter.RegisterHandler(func(_ string, _ ObisConfig, _ float64, _ string) {
 		healthMutex.Lock()
 		lastUpdateTime = time.Now()
 		healthMutex.Unlock()
@@ -220,13 +220,13 @@ func (s *SmartmeterReader) obisCallback(entry sml.ListEntry) {
 
 	if obisConfig.Type == "float" || obisConfig.Type == "" {
 		if v, ok := entry.ScaledValue(); ok {
-			s.callHandlers(code, obisConfig, v)
+			s.callHandlers(code, obisConfig, v, entry.UnitString())
 		}
 	}
 }
 
-func (s *SmartmeterReader) callHandlers(code string, config ObisConfig, value float64) {
+func (s *SmartmeterReader) callHandlers(code string, config ObisConfig, value float64, unit string) {
 	for _, handler := range s.handlers {
-		go handler(code, config, value)
+		go handler(code, config, value, unit)
 	}
 }

@@ -65,6 +65,7 @@ func TestObisCallbackWithWireData(t *testing.T) {
 	type reading struct {
 		code  string
 		value float64
+		unit  string
 	}
 
 	var wg sync.WaitGroup
@@ -72,9 +73,9 @@ func TestObisCallbackWithWireData(t *testing.T) {
 	var received []reading
 
 	wg.Add(countFloatReadings(t, mappings))
-	reader.RegisterHandler(func(code string, _ ObisConfig, value float64) {
+	reader.RegisterHandler(func(code string, _ ObisConfig, value float64, unit string) {
 		mu.Lock()
-		received = append(received, reading{code, value})
+		received = append(received, reading{code, value, unit})
 		mu.Unlock()
 		wg.Done()
 	})
@@ -98,10 +99,16 @@ func TestObisCallbackWithWireData(t *testing.T) {
 			if r.value < 21000 || r.value > 22000 {
 				t.Errorf("Unexpected energy value: %f (expected ~21570)", r.value)
 			}
+			if r.unit != "Wh" {
+				t.Errorf("Expected energy unit 'Wh', got %q", r.unit)
+			}
 		case "1-0:16.7.0*255":
 			foundPower = true
 			if r.value < 1000 || r.value > 1200 {
 				t.Errorf("Unexpected power value: %f (expected ~1100)", r.value)
+			}
+			if r.unit != "W" {
+				t.Errorf("Expected power unit 'W', got %q", r.unit)
 			}
 		}
 	}
@@ -137,7 +144,7 @@ func TestObisCallbackSkipsUnmappedCodes(t *testing.T) {
 	callCount := 0
 
 	wg.Add(expectedCalls)
-	reader.RegisterHandler(func(_ string, _ ObisConfig, _ float64) {
+	reader.RegisterHandler(func(_ string, _ ObisConfig, _ float64, _ string) {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
@@ -168,7 +175,7 @@ func TestObisCallbackDefaultTypeIsFloat(t *testing.T) {
 	called := false
 
 	wg.Add(expectedCalls)
-	reader.RegisterHandler(func(_ string, _ ObisConfig, v float64) {
+	reader.RegisterHandler(func(_ string, _ ObisConfig, v float64, _ string) {
 		mu.Lock()
 		called = true
 		mu.Unlock()
