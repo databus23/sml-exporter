@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sml-exporter
+  labels:
+    app: sml-exporter
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sml-exporter
+  template:
+    metadata:
+      labels:
+        app: sml-exporter
+    spec:
+      containers:
+      - name: exporter
+        securityContext:
+          privileged: true
+        image: databus23/sml-exporter:latest
+        command:
+          - sml-exporter
+          - -serial=/dev/ttyUSB0
+          - -config=/etc/sml-exporter/config.yaml
+        ports:
+        - containerPort: 9761
+          name: metrics
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: metrics
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: dev
+          mountPath: /dev
+        - name: config
+          mountPath: /etc/sml-exporter
+      volumes:
+      - name: config
+        configMap:
+          name: sml-exporter
+      - name: dev
+        hostPath:
+          path: /dev

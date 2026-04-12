@@ -64,3 +64,28 @@ Each entry maps an OBIS code to an optional MQTT topic, Prometheus metric, or na
 
 Entries with `type: string` and `var` store the value as a named variable instead of exporting it. These variables can be referenced elsewhere — for example, `server_id` is automatically added as a label to all Prometheus metrics, identifying which smart meter the readings came from.
 
+## Docker
+
+Pre-built multi-arch Docker images (linux/amd64, linux/arm64) are published to Docker Hub:
+
+```
+docker pull databus23/sml-exporter
+```
+
+```bash
+docker run --device /dev/ttyUSB0 -v ./config.yaml:/etc/sml-exporter/config.yaml \
+  databus23/sml-exporter -serial /dev/ttyUSB0 -config /etc/sml-exporter/config.yaml
+```
+
+## Kubernetes
+
+Example Kubernetes manifests are provided in [`examples/kubernetes/`](examples/kubernetes/). The example uses Kustomize to deploy the exporter with a ConfigMap-based configuration:
+
+```bash
+# Review and adjust examples/kubernetes/config.yaml for your meter
+kubectl apply -k examples/kubernetes/
+```
+
+The deployment requires `privileged: true` to access the serial device on the host. Adjust the serial device path in the deployment if your device is not at `/dev/ttyUSB0`.
+
+
